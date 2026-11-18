@@ -294,6 +294,9 @@ async function makeReservation(page, target) {
     page.getByText(/^\s*(show|load) more/i),
   ], 8000);
 
+  if (!cfg.preferredSpaces.length && cfg.onlyPreferred) {
+    throw new Error('PREFERRED_SPACES is not set, so I don\'t know which desk to book. Add it under Settings > Secrets and variables > Actions > Variables (e.g. 2038).');
+  }
   let card = null;
   for (let i = 0; i < 100 && cfg.preferredSpaces.length; i++) {
     for (const name of cfg.preferredSpaces) {
@@ -362,7 +365,11 @@ async function makeReservation(page, target) {
 }
 
 // ---------- main ----------
+const VERSION = '2026-11-18 v4 (Show more + desk-only)';
+
 (async () => {
+  log(`book.js ${VERSION}`);
+  log(`Desk wanted: ${cfg.preferredSpaces.join(', ') || '(PREFERRED_SPACES not set!)'} | only that desk: ${cfg.onlyPreferred} | test only: ${cfg.dryRun}`);
   fs.mkdirSync(cfg.outDir, { recursive: true });
   fs.mkdirSync(path.dirname(cfg.stateFile), { recursive: true });
 
