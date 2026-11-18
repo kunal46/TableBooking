@@ -20,7 +20,8 @@ const cfg = {
   dateFormat: env('DATE_FORMAT', 'YYYY-MM-DD'),
   formFields: JSON.parse(env('FORM_FIELDS', '[]')), // [{"label":"Building","value":"..."}, ...]
   preferredSpaces: env('PREFERRED_SPACES').split(',').map((s) => s.trim()).filter(Boolean),
-  onlyPreferred: truthy(env('ONLY_PREFERRED')), // true = fail instead of taking another desk
+  // Only book a desk from PREFERRED_SPACES. Set ONLY_PREFERRED=false to fall back to any free desk.
+  onlyPreferred: truthy(env('ONLY_PREFERRED', 'true')),
   successText: new RegExp(env('SUCCESS_TEXT', 'confirmed|success|reserved|submitted|has been booked'), 'i'),
   dryRun: truthy(env('DRY_RUN')),
   force: truthy(env('FORCE')),
@@ -285,23 +286,37 @@ async function makeReservation(page, target) {
     return (await card.count()) && (await card.isVisible().catch(() => false)) ? card : null;
   };
 
+  // Count of desk cards currently loaded (each has an Add/Remove button).
+  const cardCount = () => page.getByRole('button', { name: /^\s*(add|remove)\s*$/i }).count();
+  const findMore = () => firstVisible(page, [
+    page.getByRole('button', { name: /show more|load more|more results/i }),
+    page.getByRole('link', { name: /show more|load more|more results/i }),
+    page.getByText(/^\s*(show|load) more/i),
+  ], 8000);
+
   let card = null;
-  for (let i = 0; i < 60 && cfg.preferredSpaces.length; i++) {
+  for (let i = 0; i < 100 && cfg.preferredSpaces.length; i++) {
     for (const name of cfg.preferredSpaces) {
       card = await findCard(name);
       if (card) { log('Found preferred desk:', name); break; }
     }
     if (card) break;
-    const more = await firstVisible(page, [
-      page.getByRole('button', { name: /show more|load more/i }),
-      page.getByRole('link', { name: /show more|load more/i }),
-      page.getByText(/^\s*(show|load) more\s*$/i),
-    ]);
-    if (!more) { log('No more "Show more" button; reached the end of the list.'); break; }
+
+    // Scroll to the bottom so "Show more" (or lazy-loaded cards) appear, then wait for it.
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight)).catch(() => {});
+    await sleep(1000);
+    const more = await findMore();
+    if (!more) {
+      log(`No "Show more" button found after ${await cardCount()} desks; reached the end of the list.`);
+      await shot(page, 'end-of-list');
+      break;
+    }
+    const before = await cardCount();
     await more.scrollIntoViewIfNeeded().catch(() => {});
-    await more.click();
-    log(`Clicked "Show more" (${i + 1})`);
-    await sleep(2000);
+    await more.click({ timeout: 5000 }).catch(() => more.evaluate((el) => el.click()));
+    // Wait until more desks have loaded (up to 15s).
+    for (let t = 0; t < 30 && (await cardCount()) <= before; t++) await sleep(500);
+    log(`Clicked "Show more" (${i + 1}): ${before} -> ${await cardCount()} desks loaded`);
   }
 
   let add;
