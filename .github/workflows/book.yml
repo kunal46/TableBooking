@@ -6,7 +6,7 @@ on:
     # Fires at two UTC times to cover EDT (UTC-4) and EST (UTC-5); the script
     # exits right away on whichever run is not near BOOK_AT.
     # If you change BOOK_AT, change this too (see README).
-    - cron: '5 4,5 * * 2,4'
+    - cron: '15 4,5 * * 2,4'
   workflow_dispatch:
     inputs:
       dry_run:
