@@ -20,6 +20,7 @@ const cfg = {
   dateFormat: env('DATE_FORMAT', 'YYYY-MM-DD'),
   formFields: JSON.parse(env('FORM_FIELDS', '[]')), // [{"label":"Building","value":"..."}, ...]
   preferredSpaces: env('PREFERRED_SPACES').split(',').map((s) => s.trim()).filter(Boolean),
+  onlyPreferred: truthy(env('ONLY_PREFERRED')), // true = fail instead of taking another desk
   successText: new RegExp(env('SUCCESS_TEXT', 'confirmed|success|reserved|has been booked'), 'i'),
   dryRun: truthy(env('DRY_RUN')),
   force: truthy(env('FORCE')),
@@ -248,23 +249,63 @@ async function makeReservation(page, target) {
   }
   await shot(page, 'form-filled');
 
-  if (await clickButton(page, /^(search|find|check availability|show available|next)/i, 5000)) {
-    await page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {});
+  // 1. Search, then give the results 3 seconds to load.
+  if (!(await clickButton(page, /^\s*(search|find|check availability|show available)/i, 10000))) {
+    await shot(page, 'no-search-button');
+    throw new Error('Could not find the Search button.');
+  }
+  log('Clicked Search, waiting for results...');
+  await page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {});
+  await sleep(3000);
+  await shot(page, 'search-results');
+
+  // 2. Switch the results to "Card view".
+  const cardView = await firstVisible(page, [
+    page.getByRole('button', { name: /card view|cards?$/i }),
+    page.getByRole('tab', { name: /card view|cards?$/i }),
+    page.getByRole('link', { name: /card view/i }),
+    page.getByTitle(/card view/i),
+    page.getByText(/^\s*card view\s*$/i),
+  ], 10000);
+  if (cardView) {
+    await cardView.click();
+    log('Switched to Card view.');
     await sleep(2000);
-    await shot(page, 'search-results');
+    await shot(page, 'card-view');
+  } else {
+    log('No "Card view" toggle found, continuing with the current view.');
   }
 
-  // Pick a space: first preferred one that is available, else the first available.
-  const reserveRe = /^(reserve|select|book|choose)\b/i;
+  // 3. Find the preferred desk (e.g. 2038) and its Reserve button.
+  const actionRe = /^\s*(reserve|select|book|choose)\b/i;
+  const action = () => page.getByRole('button', { name: actionRe }).or(page.getByRole('link', { name: actionRe }));
   let picked = null;
   for (const name of cfg.preferredSpaces) {
-    const card = page.locator('div, li, tr').filter({ hasText: new RegExp(escapeRe(name), 'i') })
-      .filter({ has: page.getByRole('button', { name: reserveRe }) }).last();
-    if (await card.count()) { picked = card.getByRole('button', { name: reserveRe }).first(); log('Picking preferred space:', name); break; }
+    const nameRe = new RegExp(`(^|\\D)${escapeRe(name)}(\\D|$)`, 'i');
+    const card = page.locator('div, li, tr, article').filter({ hasText: nameRe }).filter({ has: action() }).last();
+    if (await card.count()) {
+      picked = card.locator(action()).first();
+      log('Found preferred desk:', name);
+      break;
+    }
+    // Some card views need the card clicked first to show the Reserve button.
+    const label = await firstVisible(page, [page.getByText(nameRe)]);
+    if (label) {
+      await label.click();
+      await sleep(1500);
+      picked = await firstVisible(page, [action()], 5000);
+      if (picked) { log('Found preferred desk (after opening card):', name); break; }
+    }
+    log(`Desk ${name} not found or not available.`);
   }
-  if (!picked && cfg.preferredSpaces.length) log('None of the preferred spaces are available, taking the first one.');
-  if (!picked) picked = await firstVisible(page, [page.getByRole('button', { name: reserveRe })], 10000);
+  if (!picked && cfg.preferredSpaces.length) {
+    if (cfg.onlyPreferred) { await shot(page, 'desk-not-available'); throw new Error(`Desk ${cfg.preferredSpaces.join('/')} is not available on ${target.iso}.`); }
+    log('None of the preferred desks are available, taking the first available one.');
+  }
+  if (!picked) picked = await firstVisible(page, [action()], 10000);
   if (!picked) { await shot(page, 'no-space'); throw new Error('No available table found for that date.'); }
+  await picked.scrollIntoViewIfNeeded().catch(() => {});
+  await shot(page, 'desk-picked');
 
   if (cfg.dryRun) { log('DRY RUN: stopping before reserving. Check the screenshots.'); return; }
 
