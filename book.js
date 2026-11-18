@@ -21,7 +21,7 @@ const cfg = {
   formFields: JSON.parse(env('FORM_FIELDS', '[]')), // [{"label":"Building","value":"..."}, ...]
   preferredSpaces: env('PREFERRED_SPACES').split(',').map((s) => s.trim()).filter(Boolean),
   onlyPreferred: truthy(env('ONLY_PREFERRED')), // true = fail instead of taking another desk
-  successText: new RegExp(env('SUCCESS_TEXT', 'confirmed|success|reserved|has been booked'), 'i'),
+  successText: new RegExp(env('SUCCESS_TEXT', 'confirmed|success|reserved|submitted|has been booked'), 'i'),
   dryRun: truthy(env('DRY_RUN')),
   force: truthy(env('FORCE')),
   mfaTimeoutSec: Number(env('MFA_TIMEOUT_SEC', '180')),
@@ -276,49 +276,73 @@ async function makeReservation(page, target) {
     log('No "Card view" toggle found, continuing with the current view.');
   }
 
-  // 3. Find the preferred desk (e.g. 2038) and its Reserve button.
-  const actionRe = /^\s*(reserve|select|book|choose)\b/i;
-  const action = () => page.getByRole('button', { name: actionRe }).or(page.getByRole('link', { name: actionRe }));
-  let picked = null;
-  for (const name of cfg.preferredSpaces) {
+  // 3. Find the preferred desk (e.g. 2038), clicking "Show more" until it appears.
+  const addRe = /^\s*(add|reserve|select)\b/i;
+  const addBtn = () => page.getByRole('button', { name: addRe }).or(page.getByRole('link', { name: addRe }));
+  const findCard = async (name) => {
     const nameRe = new RegExp(`(^|\\D)${escapeRe(name)}(\\D|$)`, 'i');
-    const card = page.locator('div, li, tr, article').filter({ hasText: nameRe }).filter({ has: action() }).last();
-    if (await card.count()) {
-      picked = card.locator(action()).first();
-      log('Found preferred desk:', name);
-      break;
-    }
-    // Some card views need the card clicked first to show the Reserve button.
-    const label = await firstVisible(page, [page.getByText(nameRe)]);
-    if (label) {
-      await label.click();
-      await sleep(1500);
-      picked = await firstVisible(page, [action()], 5000);
-      if (picked) { log('Found preferred desk (after opening card):', name); break; }
-    }
-    log(`Desk ${name} not found or not available.`);
-  }
-  if (!picked && cfg.preferredSpaces.length) {
-    if (cfg.onlyPreferred) { await shot(page, 'desk-not-available'); throw new Error(`Desk ${cfg.preferredSpaces.join('/')} is not available on ${target.iso}.`); }
-    log('None of the preferred desks are available, taking the first available one.');
-  }
-  if (!picked) picked = await firstVisible(page, [action()], 10000);
-  if (!picked) { await shot(page, 'no-space'); throw new Error('No available table found for that date.'); }
-  await picked.scrollIntoViewIfNeeded().catch(() => {});
-  await shot(page, 'desk-picked');
+    const card = page.locator('div, li, tr, article').filter({ hasText: nameRe }).filter({ has: addBtn() }).last();
+    return (await card.count()) && (await card.isVisible().catch(() => false)) ? card : null;
+  };
 
-  if (cfg.dryRun) { log('DRY RUN: stopping before reserving. Check the screenshots.'); return; }
+  let card = null;
+  for (let i = 0; i < 60 && cfg.preferredSpaces.length; i++) {
+    for (const name of cfg.preferredSpaces) {
+      card = await findCard(name);
+      if (card) { log('Found preferred desk:', name); break; }
+    }
+    if (card) break;
+    const more = await firstVisible(page, [
+      page.getByRole('button', { name: /show more|load more/i }),
+      page.getByRole('link', { name: /show more|load more/i }),
+      page.getByText(/^\s*(show|load) more\s*$/i),
+    ]);
+    if (!more) { log('No more "Show more" button; reached the end of the list.'); break; }
+    await more.scrollIntoViewIfNeeded().catch(() => {});
+    await more.click();
+    log(`Clicked "Show more" (${i + 1})`);
+    await sleep(2000);
+  }
 
-  await picked.click();
+  let add;
+  if (card) {
+    add = card.locator(addBtn()).first();
+  } else {
+    if (cfg.preferredSpaces.length) {
+      await shot(page, 'desk-not-found');
+      if (cfg.onlyPreferred) throw new Error(`Desk ${cfg.preferredSpaces.join('/')} is not available on ${target.iso}.`);
+      log(`Desk ${cfg.preferredSpaces.join('/')} not available, taking the first available one.`);
+    }
+    add = await firstVisible(page, [addBtn()], 10000);
+    if (!add) { await shot(page, 'no-space'); throw new Error('No available desk found for that date.'); }
+  }
+
+  // 4. Add -> Next
+  await add.scrollIntoViewIfNeeded().catch(() => {});
+  await add.click();
+  log('Clicked "Add".');
   await sleep(1500);
-  // Confirmation dialog, if any
-  await clickButton(page, /^(confirm|reserve|submit|book|yes)\b/i, 5000);
+  await shot(page, 'desk-added');
+
+  if (!(await clickButton(page, /^\s*next\b/i, 15000))) { await shot(page, 'no-next'); throw new Error('Could not find the "Next" button.'); }
+  log('Clicked "Next".');
   await page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {});
   await sleep(2000);
+  await shot(page, 'review-page');
+
+  if (cfg.dryRun) { log('DRY RUN: stopping before "Submit reservation". Check the screenshots.'); return; }
+
+  // 5. Submit reservation
+  if (!(await clickButton(page, /submit reservation|^\s*submit\b/i, 15000))) {
+    await shot(page, 'no-submit'); throw new Error('Could not find the "Submit reservation" button.');
+  }
+  log('Clicked "Submit reservation".');
+  await page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {});
+  await sleep(3000);
   await shot(page, 'after-submit');
 
   const text = await page.locator('body').innerText().catch(() => '');
-  if (!cfg.successText.test(text)) throw new Error('Submitted, but no confirmation text was found. Check the after-submit screenshot.');
+  if (!cfg.successText.test(text)) throw new Error('Clicked Submit, but no confirmation text was found. Check the after-submit screenshot.');
   log('Reservation confirmed for', target.iso);
 }
 
