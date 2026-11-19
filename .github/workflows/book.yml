@@ -1,12 +1,14 @@
 name: Book table
 
 on:
+  # Triggered by cron-job.org at 12:30 AM Toronto on Tue/Thu (reliable timing).
+  # It sends a repository_dispatch of type "book-now", which books for real.
+  repository_dispatch:
+    types: [book-now]
+  # Optional backup: GitHub's own scheduler (can be late or skipped; cron-job.org is primary).
+  # Fires at two UTC times for EDT/EST; the run outside the window just exits.
   schedule:
-    # Tuesdays and Thursdays, 15 minutes before BOOK_AT (default 07:00 Toronto time).
-    # Fires at two UTC times to cover EDT (UTC-4) and EST (UTC-5); the script
-    # exits right away on whichever run is not near BOOK_AT.
-    # If you change BOOK_AT, change this too (see README).
-    - cron: '15 4,5 * * 2,4'
+    - cron: '25 4,5 * * 2,4'
   workflow_dispatch:
     inputs:
       dry_run:
@@ -53,14 +55,17 @@ jobs:
           TIME_ZONE: ${{ vars.TIME_ZONE }}
           DAYS_AHEAD: ${{ vars.DAYS_AHEAD }}
           BOOK_DAYS: ${{ vars.BOOK_DAYS }}
-          BOOK_AT: ${{ vars.BOOK_AT || '07:00' }}
+          BOOK_AT: ${{ vars.BOOK_AT || '00:15' }}
           DATE_FORMAT: ${{ vars.DATE_FORMAT }}
           FORM_FIELDS: ${{ vars.FORM_FIELDS }}
           PREFERRED_SPACES: ${{ vars.PREFERRED_SPACES }}
+          ONLY_PREFERRED: ${{ vars.ONLY_PREFERRED }}
           SUCCESS_TEXT: ${{ vars.SUCCESS_TEXT }}
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || vars.DRY_RUN }}
           TARGET_DATE: ${{ inputs.target_date }}
-          FORCE: ${{ github.event_name == 'workflow_dispatch' }}
+          # repository_dispatch (cron-job.org) and workflow_dispatch both book immediately,
+          # skipping the BOOK_AT wait. A repository_dispatch always books for real.
+          FORCE: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'repository_dispatch' }}
 
       - name: Save login session for next run
         if: always() && hashFiles('.auth/state.json') != ''
