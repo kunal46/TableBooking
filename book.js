@@ -14,7 +14,9 @@ const cfg = {
   password: env('OKTA_PASSWORD'),
   timeZone: env('TIME_ZONE', 'America/Toronto'),
   daysAhead: Number(env('DAYS_AHEAD', '14')),
-  bookDays: env('BOOK_DAYS', 'Tue,Thu').split(',').map((s) => s.trim().slice(0, 3).toLowerCase()),
+  // Optional safety net. Empty (default) = book whatever day is 14 days ahead;
+  // the cron schedule decides which days it runs. Set e.g. "Mon,Tue,Thu" to restrict.
+  bookDays: env('BOOK_DAYS', '').split(',').map((s) => s.trim().slice(0, 3).toLowerCase()).filter(Boolean),
   bookAt: env('BOOK_AT'), // "HH:MM" local time the booking window opens; empty = book immediately
   targetDate: env('TARGET_DATE'), // YYYY-MM-DD, overrides the calculated date
   dateFormat: env('DATE_FORMAT', 'YYYY-MM-DD'),
@@ -422,7 +424,7 @@ const VERSION = '2026-11-18 v4 (Show more + desk-only)';
 
     const target = computeTarget();
     log(`Target date: ${target.iso} (${target.weekday}), entered as "${target.formatted}"`);
-    if (!cfg.targetDate && !cfg.bookDays.includes(target.weekday)) {
+    if (!cfg.targetDate && cfg.bookDays.length && !cfg.bookDays.includes(target.weekday)) {
       log(`Target is a ${target.weekday}, not one of ${cfg.bookDays.join('/')}; skipping.`);
       return;
     }
