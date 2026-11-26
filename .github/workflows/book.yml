@@ -61,6 +61,7 @@ jobs:
           PREFERRED_SPACES: ${{ vars.PREFERRED_SPACES }}
           ONLY_PREFERRED: ${{ vars.ONLY_PREFERRED }}
           SUCCESS_TEXT: ${{ vars.SUCCESS_TEXT }}
+          CHATURL: ${{ secrets.CHATURL }}
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || vars.DRY_RUN }}
           TARGET_DATE: ${{ inputs.target_date }}
           # repository_dispatch (cron-job.org) and workflow_dispatch both book immediately,
