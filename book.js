@@ -28,12 +28,28 @@ const cfg = {
   mfaTimeoutSec: Number(env('MFA_TIMEOUT_SEC', '180')),
   stateFile: env('STATE_FILE', '.auth/state.json'),
   outDir: env('OUT_DIR', 'output'),
+  chatUrl: env('CHATURL'), // Google Chat incoming webhook; empty = no message sent
 };
 
 const DAY = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
 const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const log = (...a) => console.log(`[${new Date().toISOString()}]`, ...a);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Post a message to Google Chat (if CHATURL is set). Never throws.
+async function notify(text) {
+  if (!cfg.chatUrl) return;
+  try {
+    const res = await fetch(cfg.chatUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+    log(res.ok ? 'Google Chat message sent.' : `Google Chat message failed (HTTP ${res.status}).`);
+  } catch (e) {
+    log('Google Chat message failed:', e.message);
+  }
+}
 
 // ---------- time helpers ----------
 function localNow(tz) {
@@ -391,6 +407,9 @@ const VERSION = '2026-11-18 v4 (Show more + desk-only)';
   const page = await context.newPage();
   page.setDefaultTimeout(30000);
 
+  const deskLabel = cfg.preferredSpaces.join('/') || '(any)';
+  let bookedFor = '';
+
   try {
     await login(page);
     await context.storageState({ path: cfg.stateFile }); // reused next run => often no push needed
@@ -408,12 +427,17 @@ const VERSION = '2026-11-18 v4 (Show more + desk-only)';
       return;
     }
 
+    bookedFor = target.iso;
     await makeReservation(page, target);
     await context.storageState({ path: cfg.stateFile });
+    if (!cfg.dryRun) {
+      await notify(`✅ Desk ${deskLabel} booked for ${target.iso} (${target.weekday}).`);
+    }
   } catch (err) {
     await shot(page, 'error');
     fs.writeFileSync(path.join(cfg.outDir, 'error-page.html'), await page.content().catch(() => ''));
     console.error('FAILED:', err.message);
+    await notify(`❌ Desk ${deskLabel} NOT booked${bookedFor ? ` for ${bookedFor}` : ''}. Reason: ${err.message}`);
     process.exitCode = 1;
   } finally {
     await browser.close();
